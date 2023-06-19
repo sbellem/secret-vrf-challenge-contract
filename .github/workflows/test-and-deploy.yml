@@ -6,21 +6,17 @@ jobs:
 
   # Clippy
   Linting:
-    runs-on: [ubuntu-latest]
     name: "Run linting tests"
+    runs-on: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v3
 
-      - uses: ./.github/actions/install-rust
+      - uses: dtolnay/rust-toolchain@1.63
         with:
-          toolchain: 1.63.0
-      - name: Install Clippy
-        run: |
-          rustup component add clippy
+          components: clippy
       - name: Run Clippy
-        run: |
-          cargo clippy
-        
+        run: cargo clippy
+
 
   # Unit tests
   Unit:
@@ -29,16 +25,41 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - uses: ./.github/actions/install-rust
+      - uses: dtolnay/rust-toolchain@1.63
+      - run: cargo test
+
+  # Build contract
+  Build:
+    name: "Build contract"
+    runs-on: [ubuntu-latest]
+
+    strategy:
+      matrix:
+        # https://github.com/scrtlabs/secret-vrf-challenge-contract/issues/1
+        #build_target: [build, build-mainnet]
+        build_target: [build]
+
+    env:
+      RUST_BACKTRACE: full
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: dtolnay/rust-toolchain@1.63
         with:
-          toolchain: 1.63.0
-      - name: "Run unit tests"
-        run: |
-          cargo test
+          target: wasm32-unknown-unknown
+      - name: Compile contract
+        run: make ${{ matrix.build_target }}
+      - name: Upload contract artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.build_target }}-contract-binary
+          path: contract.wasm.gz
 
   # Integration tests
   Integration:
     name: "Integration Tests (localsecret)"
+    needs: [Build]
     runs-on: [ubuntu-latest]
 
     env:
@@ -55,20 +76,21 @@ jobs:
           - 5000:5000
           - 9091:9091
           - 1317:1317
+        options: >-
+          --health-cmd "secretd status"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - uses: actions/checkout@v3
 
       - name: Install dependencies
-        run: npm --prefix tests/ install # Install dependencies
-      - uses: ./.github/actions/install-rust
-        with:
-          toolchain: 1.63.0
-      - name: Add wasm toolchain
         run: |
-          rustup target add wasm32-unknown-unknown
-      - name: Compile code
-        run: make build
+          npm --prefix tests/ install
+      - uses: actions/download-artifact@v3
+        with:
+          name: build-contract-binary
       - name: Upload & Run tests
         run: |
           npx ts-node tests/integration.ts
@@ -80,21 +102,21 @@ jobs:
       LOCALSECRET: http://localsecret2.esf6a3dqgqbabbgn.eastus.azurecontainer.io
       CHAINID: secretdev-2
 
-    needs: [Integration, Linting, Unit]
+    needs: [Integration, Linting, Unit, Build]
     runs-on: ubuntu-latest
-    steps:
 
+    steps:
       - uses: actions/checkout@v3
-      - uses: ./.github/actions/install-rust
+
+      - uses: actions/download-artifact@v3
         with:
-          toolchain: 1.63.0
-      - name: Add wasm toolchain
-        run: |
-          rustup target add wasm32-unknown-unknown
-      - name: Compile code
-        run: make build-mainnet
+          #name: build-mainnet-contract-binary
+          name: build-contract-binary
       - name: Install dependencies
-        run: npm --prefix tests/ install # Install dependencies
+        #run: npm --prefix tests/ --verbose install # Install dependencies
+        run: |
+          npm --prefix tests/ install
+          npm install ts-node
       - name: Deploy to remote & run integration tests
         run: |
           CHAINID=${{ env.CHAINID }} LOCALSECRET=${{ env.LOCALSECRET }} npx ts-node tests/integration.ts
